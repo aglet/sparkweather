@@ -273,7 +273,6 @@ Highlights lunch and commute hours."
          (precipitation-probabilities (mapcar #'caddr data))
          (temp-min (apply #'min temps))
          (temp-max (apply #'max temps))
-         (precipitation-min (apply #'min precipitation-probabilities))
          (precipitation-max (apply #'max precipitation-probabilities))
          (lunch-data (sparkweather--time-window-data data
                                                      sparkweather-lunch-start-hour
