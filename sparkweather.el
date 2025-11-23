@@ -57,6 +57,7 @@
 (require 'json)
 (require 'cl-lib)
 (require 'iso8601)
+(require 'solar)
 
 (defgroup sparkweather nil
   "Weather forecasts with sparklines."
@@ -322,7 +323,7 @@ Highlights lunch and commute hours."
       (tabulated-list-print t)
       (let ((inhibit-read-only t))
         (goto-char (point-max))
-        (insert "\n" (propertize (format-time-string "%A %Y-%m-%d %H:%M") 'face 'bold)))
+        (insert "\n" (propertize (format-time-string "%A %F %R") 'face 'bold)))
       (goto-char (point-min))
       (display-buffer (current-buffer)))))
 
@@ -335,7 +336,7 @@ Highlights lunch and commute hours."
      (sparkweather--display-day data))))
 
 ;;;###autoload
-(defalias 'sparkweather 'sparkweather-day)
+(defalias 'sparkweather #'sparkweather-day)
 
 (provide 'sparkweather)
 

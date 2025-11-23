@@ -12,7 +12,7 @@
 
 ;; Author: Robin Stephenson <robin@aglet.net>
 ;; Keywords: convenience, weather
-;; Version: 0.1.0
+;; Version: 0.1.1
 ;; Package-Requires: ((emacs "29.1"))
 ;; URL: https://github.com/aglet/sparkweather
 
@@ -48,10 +48,11 @@
 * Dependencies
 
 #+begin_src emacs-lisp
-(require 'url)
-(require 'json)
-(require 'cl-lib)
-(require 'iso8601)
+  (require 'url)
+  (require 'json)
+  (require 'cl-lib)
+  (require 'iso8601)
+  (require 'solar)
 #+end_src
 
 * Customization
@@ -374,7 +375,7 @@ Highlights lunch and commute hours."
       (tabulated-list-print t)
       (let ((inhibit-read-only t))
         (goto-char (point-max))
-        (insert "\n" (propertize (format-time-string "%A %Y-%m-%d %H:%M") 'face 'bold)))
+        (insert "\n" (propertize (format-time-string "%A %F %R") 'face 'bold)))
       (goto-char (point-min))
       (display-buffer (current-buffer)))))
 #+end_src
@@ -391,7 +392,7 @@ Highlights lunch and commute hours."
      (sparkweather--display-day data))))
 
 ;;;###autoload
-(defalias 'sparkweather 'sparkweather-day)
+(defalias 'sparkweather #'sparkweather-day)
 #+end_src
 
 #+begin_src emacs-lisp
