@@ -10,6 +10,19 @@ Weather forecasts with sparklines for Emacs, using data from [Open-Meteo]( https
 
 Sparkweather is available in [MELPA](https://melpa.org/#/getting-started).
 
+`M-x package-install RET sparkweather`
+
+Or in your configuration file.
+
+```elisp
+(use-package sparkweather
+  :ensure t
+  :after calendar
+  :config
+  (setq calendar-latitude -41.3   ; Wellington, New Zealand
+	calendar-longitude 174.8))
+```
+
 ### [Elpaca](https://github.com/progfolio/elpaca)
 
 ```elisp
