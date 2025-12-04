@@ -3,6 +3,8 @@
 ;; Copyright (C) 2025 Robin Stephenson. All rights reserved.
 
 ;; Author: Robin Stephenson <robin@aglet.net>
+;; Maintainer: Robin Stephenson <robin@aglet.net>
+;; Contributors: Andros Fenollosa <hi@andros.dev>
 ;; Keywords: convenience, weather
 ;; Version: 0.1.2
 ;; Package-Requires: ((emacs "29.1"))
