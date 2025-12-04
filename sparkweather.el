@@ -3,6 +3,8 @@
 ;; Copyright (C) 2025 Robin Stephenson. All rights reserved.
 
 ;; Author: Robin Stephenson <robin@aglet.net>
+;; Maintainer: Robin Stephenson <robin@aglet.net>
+;; Contributors: Andros Fenollosa <hi@andros.dev>
 ;; Keywords: convenience, weather
 ;; Version: 0.1.2
 ;; Package-Requires: ((emacs "29.1"))
@@ -156,6 +158,12 @@ STATUS is the `url-retrieve` status parameter."
         (let* ((json (condition-case parse-err
                          (json-parse-buffer :object-type 'alist)
                        (error (error "Failed to parse JSON: %s" parse-err))))
+               (current (or (alist-get 'current json)
+                           (error "Missing 'current' data in response")))
+               (current-temp (or (alist-get 'temperature_2m current)
+                                (error "Missing current 'temperature_2m' data in response")))
+               (current-weather-code (or (alist-get 'weather_code current)
+                                        (error "Missing current 'weather_code' data in response")))
                (hourly (or (alist-get 'hourly json)
                           (error "Missing 'hourly' data in response")))
                (times (or (alist-get 'time hourly)
@@ -168,7 +176,7 @@ STATUS is the `url-retrieve` status parameter."
                                   (error "Missing 'precipitation' data in response")))
                (weather-codes (or (alist-get 'weather_code hourly)
                                  (error "Missing 'weather_code' data in response")))
-               (results (cl-loop for i from 0 below (length times)
+               (hourly-results (cl-loop for i from 0 below (length times)
                                for time-string = (elt times i)
                                for decoded-time = (iso8601-parse time-string)
                                for hour = (decoded-time-hour decoded-time)
@@ -176,7 +184,8 @@ STATUS is the `url-retrieve` status parameter."
                                             (elt temps i)
                                             (elt precipitation-probability i)
                                             (elt precipitation i)
-                                            (elt weather-codes i)))))
+                                            (elt weather-codes i))))
+               (results (list current-temp current-weather-code hourly-results)))
           (kill-buffer)
           (funcall callback results)))
     (error
@@ -193,7 +202,7 @@ STATUS is the `url-retrieve` status parameter."
     (error "Calendar location not set.  Set `calendar-latitude' and `calendar-longitude'"))
   (unless (and (>= calendar-longitude -180) (<= calendar-longitude 180))
     (error "Invalid longitude %s.  Must be between -180 and 180" calendar-longitude))
-  (let ((url (format "https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s&hourly=temperature_2m,precipitation_probability,precipitation,weather_code&timezone=auto&forecast_days=1"
+  (let ((url (format "https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s&current=temperature_2m,weather_code&hourly=temperature_2m,precipitation_probability,precipitation,weather_code&timezone=auto&forecast_days=1"
                     calendar-latitude calendar-longitude)))
     (url-retrieve url
                   #'sparkweather--process-day-response
@@ -268,19 +277,24 @@ CURRENT-HOUR, if provided, inserts a narrow no-break space before that hour."
 
 (defun sparkweather--display-day (data)
   "Display full day weather DATA with sparklines.
+DATA is a list of (current-temp current-weather-code hourly-data).
 Highlights lunch and commute hours."
-  (let* ((current-hour (decoded-time-hour (decode-time)))
-         (temps (mapcar #'cadr data))
-         (precipitation-probabilities (mapcar #'caddr data))
+  (let* ((current-temp (car data))
+         (current-weather-code (cadr data))
+         (hourly-data (caddr data))
+         (current-weather-info (sparkweather--wmo-code-info current-weather-code))
+         (current-hour (decoded-time-hour (decode-time)))
+         (temps (mapcar #'cadr hourly-data))
+         (precipitation-probabilities (mapcar #'caddr hourly-data))
          (temp-min (apply #'min temps))
          (temp-max (apply #'max temps))
          (precipitation-max (apply #'max precipitation-probabilities))
-         (lunch-data (sparkweather--time-window-data data
+         (lunch-data (sparkweather--time-window-data hourly-data
                                                      sparkweather-lunch-start-hour
                                                      sparkweather-lunch-end-hour))
          (lunch-indices (mapcar (lambda (pair) (cons (car pair) 'success)) (car lunch-data)))
          (lunch-weather (cadr lunch-data))
-         (commute-data (sparkweather--time-window-data data
+         (commute-data (sparkweather--time-window-data hourly-data
                                                        sparkweather-commute-start-hour
                                                        sparkweather-commute-end-hour))
          (commute-indices (mapcar (lambda (pair) (cons (car pair) 'warning)) (car commute-data)))
@@ -293,12 +307,18 @@ Highlights lunch and commute hours."
          (commute-info (when commute-code (sparkweather--wmo-code-info commute-code)))
          (temp-sparkline (sparkweather--sparkline temps highlights current-hour))
          (precipitation-sparkline (sparkweather--sparkline precipitation-probabilities highlights current-hour))
-         (rainy-weather-codes (cl-loop for row in data
+         (rainy-weather-codes (cl-loop for row in hourly-data
                                        when (> (nth 2 row) 0)
                                        collect (nth 4 row)))
          (worst-weather-code (when rainy-weather-codes (apply #'max rainy-weather-codes)))
          (worst-weather-info (when worst-weather-code (sparkweather--wmo-code-info worst-weather-code)))
          (entries nil))
+    (push (list 'current (vector "Current"
+                                 (format "%d°C %s %s"
+                                         (round current-temp)
+                                         (car current-weather-info)
+                                         (cadr current-weather-info))))
+          entries)
     (push (list 'temp (vector (format "%d—%d°C" (round temp-min) (round temp-max))
                               temp-sparkline))
           entries)
