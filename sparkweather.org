@@ -12,7 +12,7 @@
 
 ;; Author: Robin Stephenson <robin@aglet.net>
 ;; Keywords: convenience, weather
-;; Version: 0.1.2
+;; Version: 0.2.0
 ;; Package-Requires: ((emacs "29.1"))
 ;; URL: https://github.com/aglet/sparkweather
 
@@ -31,10 +31,9 @@
 ;; The package uses `calendar-latitude' and `calendar-longitude' for
 ;; the forecast location.
 ;;
-;; The sparkline display highlights lunch and commute time windows,
-;; which can be configured via `sparkweather-lunch-start-hour',
-;; `sparkweather-lunch-end-hour', `sparkweather-commute-start-hour',
-;; and `sparkweather-commute-end-hour'.
+;; The sparkline display highlights configurable time windows,
+;; such as lunch and commute hours. Customize `sparkweather-time-windows'
+;; to add or modify highlighted periods.
 ;;
 ;; Weather icons use Unicode weather glyphs from the Miscellaneous
 ;; Symbols block for broad compatibility.
@@ -55,11 +54,25 @@
   (require 'solar)
 #+end_src
 
+* Data structures
+
+#+begin_src emacs-lisp
+(cl-defstruct (sparkweather-hour
+               (:constructor sparkweather-hour-create
+                (hour temperature precip-probability precipitation weather-code)))
+  "Hourly weather data from API."
+  hour
+  temperature
+  precip-probability
+  precipitation
+  weather-code)
+#+end_src
+
 * Customization
 
 ** User options
 
-Time windows define which hours are highlighted in the sparkline display using theme faces.
+Time windows define which hours are highlighted in the sparkline display using theme faces. This list-based format was introduced in version 0.2.0, replacing the individual hour variables from 0.1.x. If customized old-format variables are detected, they are automatically migrated with a deprecation warning showing the equivalent new configuration.
 
 #+begin_src emacs-lisp
 (defgroup sparkweather nil
@@ -67,47 +80,205 @@ Time windows define which hours are highlighted in the sparkline display using t
   :group 'calendar
   :prefix "sparkweather-")
 
-(defun sparkweather--validate-hour (symbol value)
-  "Validate that VALUE is a valid hour (0-23) for SYMBOL."
-  (unless (and (integerp value) (>= value 0) (<= value 23))
-    (user-error "Hour must be 0-23, got %s" value))
-  (set-default symbol value))
+(defcustom sparkweather-time-windows
+  '(("Lunch" 12 14)
+    ("Commute" 17 19))
+  "Time windows to highlight in forecast display.
+Each window colours a portion of the sparkline and displays the worst weather
+for that period.
+
+Define windows as (NAME START-HOUR END-HOUR) or (NAME START-HOUR END-HOUR FACE) where:
+  NAME is a string describing the window (e.g., \"Lunch\", \"Commute\")
+  START-HOUR is the first hour to highlight (0-23)
+  END-HOUR is the hour to stop before (0-23, not included in the window)
+  FACE colours the window; defaults to 'success if omitted
+
+Examples:
+  (\"Lunch\" 12 14) highlights hours 12 and 13 with 'success face
+  (\"Commute\" 17 19 warning) highlights hours 17 and 18 with 'warning face"
+  :type '(repeat (choice
+                  (list (string :tag "Name")
+                        (integer :tag "Start hour (0-23)")
+                        (integer :tag "End hour (0-23)"))
+                  (list (string :tag "Name")
+                        (integer :tag "Start hour (0-23)")
+                        (integer :tag "End hour (0-23)")
+                        (symbol :tag "Highlight face"))))
+  :group 'sparkweather)
+
+(defcustom sparkweather-show-footer t
+  "Whether to show timestamp and location at bottom of forecast."
+  :type 'boolean
+  :group 'sparkweather)
 
 (defcustom sparkweather-lunch-start-hour 12
-  "Start hour for lunch time window (24-hour format, 0-23)."
+  "Start hour for lunch time window (24-hour format, 0-23).
+
+DEPRECATED: Use `sparkweather-time-windows' instead."
   :type 'integer
-  :set #'sparkweather--validate-hour
   :group 'sparkweather)
+(make-obsolete-variable 'sparkweather-lunch-start-hour
+                        'sparkweather-time-windows
+                        "0.2.0")
 
 (defcustom sparkweather-lunch-end-hour 14
-  "End hour for lunch time window (24-hour format, 0-23)."
+  "End hour for lunch time window (24-hour format, 0-23).
+
+DEPRECATED: Use `sparkweather-time-windows' instead."
   :type 'integer
-  :set #'sparkweather--validate-hour
   :group 'sparkweather)
+(make-obsolete-variable 'sparkweather-lunch-end-hour
+                        'sparkweather-time-windows
+                        "0.2.0")
 
 (defcustom sparkweather-commute-start-hour 17
-  "Start hour for commute time window (24-hour format, 0-23)."
+  "Start hour for commute time window (24-hour format, 0-23).
+
+DEPRECATED: Use `sparkweather-time-windows' instead."
   :type 'integer
-  :set #'sparkweather--validate-hour
   :group 'sparkweather)
+(make-obsolete-variable 'sparkweather-commute-start-hour
+                        'sparkweather-time-windows
+                        "0.2.0")
 
 (defcustom sparkweather-commute-end-hour 19
-  "End hour for commute time window (24-hour format, 0-23)."
+  "End hour for commute time window (24-hour format, 0-23).
+
+DEPRECATED: Use `sparkweather-time-windows' instead."
   :type 'integer
-  :set #'sparkweather--validate-hour
   :group 'sparkweather)
+(make-obsolete-variable 'sparkweather-commute-end-hour
+                        'sparkweather-time-windows
+                        "0.2.0")
 #+end_src
 
-** Constants
+** Validation
 
 #+begin_src emacs-lisp
-(defconst sparkweather--buffer-name "*Sparkweather*"
-  "Name of buffer used to display weather forecasts.")
+(defun sparkweather--detect-invalid-windows (windows)
+  "Detect windows with invalid hour ranges in WINDOWS list.
+Returns list of invalid windows as (NAME START END REASON), or nil if all valid.
+REASON is one of: out-of-range, invalid-range."
+  (cl-loop for window in windows
+           for (name start end _face) = window
+           for reason = (cond
+                         ((or (< start 0) (> start 23) (< end 0) (> end 23))
+                          'out-of-range)
+                         ((<= end start)
+                          'invalid-range))
+           when reason
+           collect (list name start end reason)))
+
+(defun sparkweather--format-invalid-warning (invalid-windows)
+  "Format warning message for INVALID-WINDOWS."
+  (concat "Invalid time windows detected in sparkweather-time-windows:\n\n"
+          (mapconcat
+           (pcase-lambda (`(,name ,start ,end ,reason))
+             (pcase reason
+               ('out-of-range
+                (format "  - \"%s\" has hours outside valid range 0-23 (start: %d, end: %d)"
+                       name start end))
+               ('invalid-range
+                (format "  - \"%s\" has end hour %d <= start hour %d"
+                       name end start))))
+           invalid-windows
+           "\n")
+          "\n\nHours must be in range 0-23, and end hour must be after start hour."))
+
+(defun sparkweather--window-overlap (w1 w2)
+  "Return overlap between windows W1 and W2, or nil if they don't overlap."
+  (pcase-let ((`(,name1 ,start1 ,end1 ,_) w1)
+              (`(,name2 ,start2 ,end2 ,_) w2))
+    (let ((overlap-start (max start1 start2))
+          (overlap-end (min end1 end2)))
+      (when (< overlap-start overlap-end)
+        (list name1 name2 overlap-start overlap-end)))))
+
+(defun sparkweather--detect-window-overlaps (windows)
+  "Detect overlapping time windows in WINDOWS list.
+Returns list of overlaps as (NAME1 NAME2 OVERLAP-START OVERLAP-END),
+or nil if no overlaps found."
+  (cl-loop for (w1 . rest) on windows
+           nconc (cl-loop for w2 in rest
+                          for overlap = (sparkweather--window-overlap w1 w2)
+                          when overlap collect overlap)))
+
+(defun sparkweather--format-overlap-warning (overlaps)
+  "Format warning message for OVERLAPS."
+  (concat "Time window overlaps detected in sparkweather-time-windows:\n\n"
+          (mapconcat
+           (pcase-lambda (`(,name1 ,name2 ,start ,end))
+             (format "  - \"%s\" and \"%s\" both cover hours %d-%d"
+                    name1 name2 start end))
+           overlaps
+           "\n")
+          "\n\nFirst window takes precedence for overlapping hours.\n"
+          "Consider adjusting your window times to avoid overlaps."))
+
+(defun sparkweather--validate-windows (windows)
+  "Validate WINDOWS configuration and warn about problems.
+Returns WINDOWS unchanged (validation doesn't prevent usage)."
+  (let ((invalid (sparkweather--detect-invalid-windows windows)))
+    (when invalid
+      (display-warning 'sparkweather
+                      (sparkweather--format-invalid-warning invalid)
+                      :warning)))
+  (let ((overlaps (sparkweather--detect-window-overlaps windows)))
+    (when overlaps
+      (display-warning 'sparkweather
+                      (sparkweather--format-overlap-warning overlaps)
+                      :warning)))
+  windows)
 #+end_src
+
+** Migration
+
+#+begin_src emacs-lisp
+(defun sparkweather--migrate-deprecated-config ()
+  "Migrate old hour variables to new time-windows format.
+Returns new time-windows list if old variables are customized,
+nil if they have default values (no migration needed)."
+  (let ((lunch-start sparkweather-lunch-start-hour)
+        (lunch-end sparkweather-lunch-end-hour)
+        (commute-start sparkweather-commute-start-hour)
+        (commute-end sparkweather-commute-end-hour))
+    (if (and (= lunch-start 12) (= lunch-end 14)
+             (= commute-start 17) (= commute-end 19))
+        nil
+      (list (list "Lunch" lunch-start lunch-end 'success)
+            (list "Commute" commute-start commute-end 'warning)))))
+
+(defun sparkweather--format-migration-message (windows)
+  "Format helpful migration message for WINDOWS config."
+  (format "Sparkweather: Using deprecated hour variables.
+
+Update your configuration to:
+
+  (setq sparkweather-time-windows
+        '%S)
+
+The old sparkweather-{lunch,commute}-{start,end}-hour variables
+are deprecated and will be removed in a future version."
+          windows))
+
+(defun sparkweather--maybe-migrate-config ()
+  "Check for deprecated config and migrate with warning if found."
+  (let ((migrated-windows (sparkweather--migrate-deprecated-config)))
+    (when migrated-windows
+      (display-warning 'sparkweather
+                      (sparkweather--format-migration-message migrated-windows)
+                      :warning)
+      migrated-windows)))
+#+end_src
+
+* Constants
 
 The World Meteorological Organization (WMO) defines [[https://open-meteo.com/en/docs][standard codes for weather conditions]]. We map these to Unicode weather glyphs from the [[https://www.unicode.org/charts/PDF/U2600.pdf][Miscellaneous Symbols block]] for consistent rendering—[[https://www.nerdfonts.com][Nerd Fonts]] was appealing in principle, but annoying in practice.
 
 #+begin_src emacs-lisp
+(defconst sparkweather--buffer-name "*Sparkweather*"
+  "Name of buffer used to display weather forecasts.")
+
 (defconst sparkweather--wmo-codes-unicode
   '((0 . ("☀" "Clear sky"))
     (1 . ("☀" "Mainly clear"))
@@ -141,62 +312,72 @@ The World Meteorological Organization (WMO) defines [[https://open-meteo.com/en/
 
 (defun sparkweather--wmo-code-info (code)
   "Get (icon description) for WMO CODE using Unicode weather glyphs."
-  (let ((info (or (alist-get code sparkweather--wmo-codes-unicode)
-                  '("?" "Unknown"))))
-    (list (car info) (downcase (cadr info)))))
+  (pcase-let ((`(,icon ,description)
+               (or (alist-get code sparkweather--wmo-codes-unicode)
+                   '("?" "Unknown"))))
+    (list icon (downcase description))))
 #+end_src
-
 
 * API interaction
 
 ** Response processing
 
-Asynchronous HTTP callback to parse JSON response and extract hourly weather data.
-
 #+begin_src emacs-lisp
+(defun sparkweather--require-field (alist field)
+  "Get FIELD from ALIST or signal error if missing."
+  (or (alist-get field alist)
+      (error "Missing '%s' data in response" field)))
+
+(defun sparkweather--validate-http-response (status)
+  "Validate HTTP response STATUS and position buffer after headers.
+Signals error if response is invalid."
+  (when (plist-get status :error)
+    (error "Network error: %s" (plist-get status :error)))
+
+  (goto-char (point-min))
+  (unless (re-search-forward "^HTTP/[0-9.]+ \\([0-9]+\\)" nil t)
+    (error "Invalid HTTP response"))
+
+  (let ((status-code (string-to-number (match-string 1))))
+    (unless (= status-code 200)
+      (error "HTTP error %d" status-code)))
+
+  (unless (re-search-forward "\r?\n\r?\n" nil t)
+    (error "Missing HTTP headers")))
+
+(defun sparkweather--parse-weather-json ()
+  "Parse JSON weather response from current buffer.
+Returns alist with hourly data arrays."
+  (let ((json (json-parse-buffer :object-type 'alist)))
+    (or (alist-get 'hourly json)
+        (error "Missing 'hourly' data in response"))))
+
+(defun sparkweather--transform-hourly-data (hourly)
+  "Transform HOURLY alist into list of sparkweather-hour structs."
+  (let ((times (sparkweather--require-field hourly 'time))
+        (temps (sparkweather--require-field hourly 'temperature_2m))
+        (precip-probs (sparkweather--require-field hourly 'precipitation_probability))
+        (precips (sparkweather--require-field hourly 'precipitation))
+        (codes (sparkweather--require-field hourly 'weather_code)))
+    (cl-loop for i from 0 below (length times)
+             for time-string = (aref times i)
+             for decoded-time = (iso8601-parse time-string)
+             for hour = (decoded-time-hour decoded-time)
+             collect (sparkweather-hour-create
+                     hour
+                     (aref temps i)
+                     (aref precip-probs i)
+                     (aref precips i)
+                     (aref codes i)))))
+
 (defun sparkweather--process-day-response (status callback)
   "Process weather API response for full day and call CALLBACK with results.
 STATUS is the `url-retrieve` status parameter."
   (condition-case err
       (progn
-        (when (plist-get status :error)
-          (error "Network error: %s" (plist-get status :error)))
-
-        (goto-char (point-min))
-        (unless (re-search-forward "^HTTP/[0-9.]+ \\([0-9]+\\)" nil t)
-          (error "Invalid HTTP response"))
-
-        (let ((status-code (string-to-number (match-string 1))))
-          (unless (= status-code 200)
-            (error "HTTP error %d" status-code)))
-
-        (unless (re-search-forward "\r?\n\r?\n" nil t)
-          (error "Missing HTTP headers"))
-
-        (let* ((json (condition-case parse-err
-                         (json-parse-buffer :object-type 'alist)
-                       (error (error "Failed to parse JSON: %s" parse-err))))
-               (hourly (or (alist-get 'hourly json)
-                          (error "Missing 'hourly' data in response")))
-               (times (or (alist-get 'time hourly)
-                         (error "Missing 'time' data in response")))
-               (temps (or (alist-get 'temperature_2m hourly)
-                         (error "Missing 'temperature_2m' data in response")))
-               (precipitation-probability (or (alist-get 'precipitation_probability hourly)
-                                              (error "Missing 'precipitation_probability' data in response")))
-               (precipitation (or (alist-get 'precipitation hourly)
-                                  (error "Missing 'precipitation' data in response")))
-               (weather-codes (or (alist-get 'weather_code hourly)
-                                 (error "Missing 'weather_code' data in response")))
-               (results (cl-loop for i from 0 below (length times)
-                               for time-string = (elt times i)
-                               for decoded-time = (iso8601-parse time-string)
-                               for hour = (decoded-time-hour decoded-time)
-                               collect (list hour
-                                            (elt temps i)
-                                            (elt precipitation-probability i)
-                                            (elt precipitation i)
-                                            (elt weather-codes i)))))
+        (sparkweather--validate-http-response status)
+        (let* ((hourly (sparkweather--parse-weather-json))
+               (results (sparkweather--transform-hourly-data hourly)))
           (kill-buffer)
           (funcall callback results)))
     (error
@@ -209,16 +390,19 @@ STATUS is the `url-retrieve` status parameter."
 Request [[https://open-meteo.com/en/docs][forecast from Open-Meteo]] using coordinates from calendar variables.
 
 #+begin_src emacs-lisp
+(defun sparkweather--validate-coordinates ()
+  "Validate calendar coordinates are set and within valid ranges."
+  (unless (and (boundp 'calendar-latitude) (boundp 'calendar-longitude)
+               (numberp calendar-latitude) (numberp calendar-longitude))
+    (error "Calendar location not set. Set `calendar-latitude' and `calendar-longitude'"))
+  (unless (and (>= calendar-latitude -90) (<= calendar-latitude 90))
+    (error "Invalid latitude %s. Must be between -90 and 90" calendar-latitude))
+  (unless (and (>= calendar-longitude -180) (<= calendar-longitude 180))
+    (error "Invalid longitude %s. Must be between -180 and 180" calendar-longitude)))
+
 (defun sparkweather--fetch-day (callback)
   "Fetch full day weather for calendar location and call CALLBACK with results."
-  (unless (numberp calendar-latitude)
-    (error "Calendar location not set.  Set `calendar-latitude' and `calendar-longitude'"))
-  (unless (and (>= calendar-latitude -90) (<= calendar-latitude 90))
-    (error "Invalid latitude %s.  Must be between -90 and 90" calendar-latitude))
-  (unless (numberp calendar-longitude)
-    (error "Calendar location not set.  Set `calendar-latitude' and `calendar-longitude'"))
-  (unless (and (>= calendar-longitude -180) (<= calendar-longitude 180))
-    (error "Invalid longitude %s.  Must be between -180 and 180" calendar-longitude))
+  (sparkweather--validate-coordinates)
   (let ((url (format "https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s&hourly=temperature_2m,precipitation_probability,precipitation,weather_code&timezone=auto&forecast_days=1"
                     calendar-latitude calendar-longitude)))
     (url-retrieve url
@@ -236,49 +420,89 @@ Extract indices and weather codes for a specific time range, used to highlight l
 #+begin_src emacs-lisp
 (defun sparkweather--time-window-data (data start-hour end-hour)
   "Extract weather data from DATA for hours between START-HOUR and END-HOUR.
-Returns (indices weather-codes) where indices is an alist for sparkline
-highlighting and weather-codes is a list of WMO codes for averaging."
-  (let ((indices nil)
-        (weather-codes nil))
-    (cl-loop for row in data
-            for i from 0
-            when (and (>= (car row) start-hour) (< (car row) end-hour))
-            do (push (cons i nil) indices)
-            and collect (nth 4 row) into codes
-            finally (setq weather-codes codes))
-    (list (nreverse indices) weather-codes)))
+Returns (indices weather-codes) where indices is a list of matching hour indices
+and weather-codes is a list of WMO codes for that window."
+  (cl-loop for hour-data in data
+           for i from 0
+           when (and (>= (sparkweather-hour-hour hour-data) start-hour)
+                     (< (sparkweather-hour-hour hour-data) end-hour))
+           collect i into indices
+           and collect (sparkweather-hour-weather-code hour-data) into codes
+           finally return (list indices codes)))
+#+end_src
+
+** Window preparation
+
+Prepare time window data for display by combining indices with faces and extracting weather information.
+
+#+begin_src emacs-lisp
+(defun sparkweather--prepare-window (data window)
+  "Prepare sparkline data for WINDOW from weather DATA.
+WINDOW is (name start-hour end-hour) or (name start-hour end-hour face).
+If FACE is omitted, defaults to 'success.
+Returns plist with :name :face :indices :weather-info."
+  (pcase-let* ((`(,name ,start ,end . ,rest) window)
+               (face (or (car rest) 'success))
+               (`(,indices ,codes)
+                (sparkweather--time-window-data data start end)))
+    (let* ((highlighted-indices (mapcar (lambda (idx) (cons idx face))
+                                        indices))
+           (worst-code (and codes (apply #'max codes)))
+           (weather-info (when worst-code
+                          (sparkweather--wmo-code-info worst-code))))
+      (list :name name
+            :face face
+            :indices highlighted-indices
+            :weather-info weather-info))))
+
+(defun sparkweather--prepare-windows (data windows)
+  "Prepare all WINDOWS from weather DATA.
+Returns (window-data all-indices) where window-data is a list of window plists
+and all-indices is combined highlight indices from all windows."
+  (cl-loop for window in windows
+           for window-plist = (sparkweather--prepare-window data window)
+           collect window-plist into window-data
+           nconc (plist-get window-plist :indices) into all-indices
+           finally return (list window-data all-indices)))
 #+end_src
 
 ** Sparkline generation
 
-Unicode block character visualization inspired by [[https://www.edwardtufte.com/bboard/q-and-a-fetch-msg?msg_id=0001OR][Edward Tufte's sparklines]].
+Unicode block character visualisation inspired by [[https://www.edwardtufte.com/bboard/q-and-a-fetch-msg?msg_id=0001OR][Edward Tufte's sparklines]].
 
 #+begin_src emacs-lisp
+(defun sparkweather--normalize-value (val min-val max-val range)
+  "Normalise VAL to 0-7 for sparkline character selection.
+Handles edge cases: all-zero data uses floor, constant data uses mid-height."
+  (cond
+   ((and (zerop range) (zerop max-val)) 0)
+   ((zerop range) 4)
+   (t (min 7 (floor (* 8 (/ (- val min-val) (float range))))))))
+
+(defun sparkweather--format-sparkline-char (char face current-hour-p)
+  "Format sparkline CHAR with optional FACE and CURRENT-HOUR-P marker."
+  (concat
+   (when current-hour-p "\u202F")
+   (if face
+       (propertize char 'face face)
+     char)))
+
 (defun sparkweather--sparkline (values &optional highlights current-hour)
   "Generate sparkline from VALUES.
 HIGHLIGHTS is an alist of (index . face) to highlight specific positions.
 CURRENT-HOUR, if provided, inserts a narrow no-break space before that hour."
-  (let* ((min-val (apply #'min values))
-         (max-val (apply #'max values))
-         (range (- max-val min-val))
-         (chars "▁▂▃▄▅▆▇█")
-         (thin-space "\u202F"))
-    (apply #'concat
-           (cl-loop for val in values
-                    for i from 0
-                    for normalized = (if (zerop range)
-                                         ;; Use floor for all-zero data (eg 0%
-                                         ;; precipitation), mid-height otherwise
-                                         ;; (eg constant temperature)
-                                         (if (zerop max-val) 0 4)
-                                       (min 7 (floor (* 8 (/ (- val min-val) range)))))
-                    for char = (substring chars normalized (1+ normalized))
-                    for face = (alist-get i highlights)
-                    collect (concat
-                             (when (and current-hour (= i current-hour)) thin-space)
-                             (if face
-                                 (propertize char 'face face)
-                               char))))))
+  (when values
+    (let* ((min-val (apply #'min values))
+           (max-val (apply #'max values))
+           (range (- max-val min-val))
+           (chars "▁▂▃▄▅▆▇█"))
+      (cl-loop for val in values
+               for i from 0
+               concat (let* ((normalized (sparkweather--normalize-value val min-val max-val range))
+                             (char (substring chars normalized (1+ normalized)))
+                             (face (alist-get i highlights)))
+                        (sparkweather--format-sparkline-char
+                         char face (and current-hour (= i current-hour))))))))
 #+end_src
 
 * Display
@@ -302,12 +526,10 @@ Special mode with keybindings for the weather display buffer.
 
 (define-derived-mode sparkweather-mode tabulated-list-mode "Sparkweather"
   "Major mode for displaying weather forecasts with sparklines."
-  (setq tabulated-list-format [("Range" 12 nil) ("Forecast" 0 nil)]
-        tabulated-list-padding 1
+  (setq tabulated-list-padding 1
         cursor-type nil)
   (setq-local show-help-function nil))
 
-;; Configure display to use minimal window height
 (add-to-list 'display-buffer-alist
              `(,(regexp-quote sparkweather--buffer-name)
                (display-buffer-reuse-window display-buffer-below-selected)
@@ -315,69 +537,99 @@ Special mode with keybindings for the weather display buffer.
                (body-function . ,#'select-window)))
 #+end_src
 
+** Entry formatting
+
+Create table entries from prepared window data.
+
+#+begin_src emacs-lisp
+(defun sparkweather--display-window-entry (window-plist)
+  "Create table entry from WINDOW-PLIST.
+Returns (symbol vector) for tabulated-list-entries, or nil if no weather info."
+  (let ((name (plist-get window-plist :name))
+        (face (plist-get window-plist :face))
+        (info (plist-get window-plist :weather-info)))
+    (when info
+      (list (intern (downcase name))
+            (vector (concat (propertize "■" 'face face) " " name)
+                    (format "%s %s" (car info) (cadr info)))))))
+#+end_src
+
 ** Rendering
 
 #+begin_src emacs-lisp
-(defun sparkweather--display-day (data)
-  "Display full day weather DATA with sparklines.
-Highlights lunch and commute hours."
-  (let* ((current-hour (decoded-time-hour (decode-time)))
-         (temps (mapcar #'cadr data))
-         (precipitation-probabilities (mapcar #'caddr data))
-         (temp-min (apply #'min temps))
-         (temp-max (apply #'max temps))
-         (precipitation-max (apply #'max precipitation-probabilities))
-         (lunch-data (sparkweather--time-window-data data
-                                                     sparkweather-lunch-start-hour
-                                                     sparkweather-lunch-end-hour))
-         (lunch-indices (mapcar (lambda (pair) (cons (car pair) 'success)) (car lunch-data)))
-         (lunch-weather (cadr lunch-data))
-         (commute-data (sparkweather--time-window-data data
-                                                       sparkweather-commute-start-hour
-                                                       sparkweather-commute-end-hour))
-         (commute-indices (mapcar (lambda (pair) (cons (car pair) 'warning)) (car commute-data)))
-         (commute-weather (cadr commute-data))
-         (highlights (append lunch-indices commute-indices))
-         ;; Use worst weather (highest WMO code) for each time window
-         (lunch-code (when lunch-weather (apply #'max lunch-weather)))
-         (commute-code (when commute-weather (apply #'max commute-weather)))
-         (lunch-info (when lunch-code (sparkweather--wmo-code-info lunch-code)))
-         (commute-info (when commute-code (sparkweather--wmo-code-info commute-code)))
-         (temp-sparkline (sparkweather--sparkline temps highlights current-hour))
-         (precipitation-sparkline (sparkweather--sparkline precipitation-probabilities highlights current-hour))
-         (rainy-weather-codes (cl-loop for row in data
-                                       when (> (nth 2 row) 0)
-                                       collect (nth 4 row)))
-         (worst-weather-code (when rainy-weather-codes (apply #'max rainy-weather-codes)))
-         (worst-weather-info (when worst-weather-code (sparkweather--wmo-code-info worst-weather-code)))
-         (entries nil))
-    (push (list 'temp (vector (format "%d—%d°C" (round temp-min) (round temp-max))
-                              temp-sparkline))
-          entries)
-    (when worst-weather-info
-      (push (list 'precip (vector (format "%d%% %s"
-                                          (round precipitation-max)
-                                          (car worst-weather-info))
-                                  precipitation-sparkline))
-            entries))
-    (when lunch-info
-      (push (list 'lunch (vector (concat (propertize "■" 'face 'success) " Lunch")
-                                 (format "%s %s" (car lunch-info) (cadr lunch-info))))
-            entries))
-    (when commute-info
-      (push (list 'commute (vector (concat (propertize "■" 'face 'warning) " Commute")
-                                   (format "%s %s" (car commute-info) (cadr commute-info))))
-            entries))
-    (with-current-buffer (get-buffer-create sparkweather--buffer-name)
-      (sparkweather-mode)
-      (setq tabulated-list-entries (nreverse entries)
-            tabulated-list-use-header-line nil)
-      (tabulated-list-print t)
+(defun sparkweather--calculate-ranges (data)
+  "Extract values and calculate ranges from DATA in single pass.
+Returns (temps precip-probs temp-min temp-max precip-max rainy-codes)."
+  (cl-loop for hour-data in data
+           for temp = (sparkweather-hour-temperature hour-data)
+           for precip-prob = (sparkweather-hour-precip-probability hour-data)
+           for weather-code = (sparkweather-hour-weather-code hour-data)
+           collect temp into temps
+           collect precip-prob into precip-probs
+           minimize temp into temp-min
+           maximize temp into temp-max
+           maximize precip-prob into precip-max
+           when (> precip-prob 0)
+           collect weather-code into rainy-codes
+           finally return (list temps precip-probs temp-min temp-max precip-max rainy-codes)))
+
+(defun sparkweather--create-entries (data current-hour windows)
+  "Create table entries for DATA, highlighting CURRENT-HOUR and WINDOWS.
+Returns list of entries for tabulated-list-mode."
+  (pcase-let* ((`(,temps ,precip-probs ,temp-min ,temp-max ,precip-max ,rainy-codes)
+                (sparkweather--calculate-ranges data))
+               (`(,window-data ,highlights)
+                (sparkweather--prepare-windows data windows))
+               (temp-sparkline (sparkweather--sparkline temps highlights current-hour))
+               (precip-sparkline (sparkweather--sparkline precip-probs highlights current-hour))
+               (worst-weather-code (and rainy-codes (apply #'max rainy-codes)))
+               (worst-weather-info (when worst-weather-code
+                                    (sparkweather--wmo-code-info worst-weather-code))))
+    (append
+     (list (list 'temp (vector (format "%d—%d°C" (round temp-min) (round temp-max))
+                               temp-sparkline)))
+     (when worst-weather-info
+       (list (list 'precip (vector (format "%d%% %s"
+                                           (round precip-max)
+                                           (car worst-weather-info))
+                                   precip-sparkline))))
+     (cl-loop for window-plist in window-data
+              for entry = (sparkweather--display-window-entry window-plist)
+              when entry collect entry))))
+
+(defun sparkweather--calculate-column-width (entries)
+  "Calculate optimal first column width for ENTRIES."
+  (or (cl-loop for (_id columns) in entries
+               maximize (length (aref columns 0)))
+      0))
+
+(defun sparkweather--show-buffer (entries)
+  "Populate weather buffer with ENTRIES and display it."
+  (with-current-buffer (get-buffer-create sparkweather--buffer-name)
+    (sparkweather-mode)
+    (let ((first-col-width (sparkweather--calculate-column-width entries)))
+      (setq tabulated-list-format `[("Range" ,first-col-width nil) ("Forecast" 0 nil)]))
+    (setq tabulated-list-entries entries
+          tabulated-list-use-header-line nil)
+    (tabulated-list-print t)
+    (when sparkweather-show-footer
       (let ((inhibit-read-only t))
         (goto-char (point-max))
-        (insert "\n" (format-time-string "%A %F %R")))
-      (goto-char (point-min))
-      (display-buffer (current-buffer)))))
+        (insert "\n" (format-time-string "%A %F %R"))
+        (when (and (boundp 'calendar-location-name) calendar-location-name)
+          (insert " " calendar-location-name))))
+    (goto-char (point-min))
+    (display-buffer (current-buffer))))
+
+(defun sparkweather--display-day (data)
+  "Display full day weather DATA with sparklines.
+Highlights configured time windows."
+  (let* ((current-hour (decoded-time-hour (decode-time)))
+         (windows (sparkweather--validate-windows
+                  (or (sparkweather--maybe-migrate-config)
+                      sparkweather-time-windows)))
+         (entries (sparkweather--create-entries data current-hour windows)))
+    (sparkweather--show-buffer entries)))
 #+end_src
 
 * Public interface
@@ -387,9 +639,7 @@ Highlights lunch and commute hours."
 (defun sparkweather-day ()
   "Show full day weather with sparklines."
   (interactive)
-  (sparkweather--fetch-day
-   (lambda (data)
-     (sparkweather--display-day data))))
+  (sparkweather--fetch-day #'sparkweather--display-day))
 
 ;;;###autoload
 (defalias 'sparkweather #'sparkweather-day)

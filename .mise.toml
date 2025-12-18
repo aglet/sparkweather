@@ -2,8 +2,8 @@
 prek = "latest"
 
 [tasks.tangle]
-description = "Tangle the org file"
-run = "./tangle.sh sparkweather.org"
+description = "Tangle the org files"
+run = "./tangle.sh sparkweather.org sparkweather-test.org"
 
 [tasks.lint]
 description = "Run all pre-commit hooks on all files"

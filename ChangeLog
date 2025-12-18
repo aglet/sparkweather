@@ -1,3 +1,23 @@
+2025-12-18  Robin Stephenson  <robin@aglet.net>
+
+	* sparkweather.org: Display improvements: dynamic column width
+	calculation based on content, optional footer with timestamp and
+	location (sparkweather-show-footer), and optional FACE argument
+	for time windows (defaults to 'success).
+
+2025-12-17  Robin Stephenson  <robin@aglet.net>
+
+	* sparkweather.org (sparkweather-time-windows): Replace four
+	individual hour variables with single configurable time windows
+	list, allowing unlimited custom time periods. BREAKING CHANGE:
+	Old sparkweather-{lunch,commute}-{start,end}-hour variables
+	deprecated but automatically migrated with warning.
+
+	* sparkweather.org: Refactor, and add test suite.
+
+	* README.md: Document sparkweather-time-windows configuration
+	interface with examples.
+
 2025-12-11  Robin Stephenson  <robin@aglet.net>
 
         * README.md: Add command to install from MELPA, remove reference
@@ -19,7 +39,7 @@
 
 	* README.md: Add license and MELPA badges.
 
-	* sparkweather.el (sparkweather--display-day): Remove bold
+	* sparkweather.org (sparkweather--display-day): Remove bold
         formatting for date.
 
 	* ChangeLog: Add change log.
