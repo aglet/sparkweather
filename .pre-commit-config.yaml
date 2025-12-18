@@ -12,3 +12,12 @@ repos:
   hooks:
   - id: markdownlint-cli2
     args: ["--fix"]
+# Disabled: elisp hooks require emacs --batch which fails with tree-sitter
+# library issues. See CONTRIBUTING.md for manual elisp validation steps. They
+# also need Python, which is managed via .mise.toml
+# - repo: https://github.com/jamescherti/pre-commit-elisp
+#   rev: v1.0.5
+#   hooks:
+#   - id: elisp-check-parens
+#   - id: elisp-check-byte-compile
+#   - id: elisp-indent

@@ -1,5 +1,7 @@
 [tools]
 prek = "latest"
+# Required for elisp pre-commit checks, which are broken:
+#python = "latest"
 
 [tasks.tangle]
 description = "Tangle the org files"
