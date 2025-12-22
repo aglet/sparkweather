@@ -111,6 +111,15 @@ Has no effect if `sparkweather-add-footer' is nil."
   :type 'boolean
   :group 'sparkweather)
 
+(defcustom sparkweather-temperature-unit 'celsius
+  "Temperature unit for display and API requests.
+Valid values are \\='celsius, \\='fahrenheit, \"C\", or \"F\"."
+  :type '(choice (const :tag "Celsius" celsius)
+                 (const :tag "Fahrenheit" fahrenheit)
+                 (const :tag "C" "C")
+                 (const :tag "F" "F"))
+  :group 'sparkweather)
+
 (defcustom sparkweather-lunch-start-hour 12
   "Start hour for lunch time window (24-hour format, 0-23).
 
@@ -150,6 +159,20 @@ DEPRECATED: Use `sparkweather-time-windows' instead."
 (make-obsolete-variable 'sparkweather-commute-end-hour
                         'sparkweather-time-windows
                         "0.2.0")
+
+(defun sparkweather--temperature-unit-symbol ()
+  "Return the display symbol (°C or °F) for the configured temperature unit."
+  (pcase sparkweather-temperature-unit
+    ((or 'fahrenheit "F") "°F")
+    (_ "°C")))
+
+(defun sparkweather--convert-temperature (celsius)
+  "Convert CELSIUS temperature to the configured unit.
+Returns temperature in Fahrenheit if unit is set to fahrenheit or \"F\",
+otherwise returns CELSIUS unchanged."
+  (pcase sparkweather-temperature-unit
+    ((or 'fahrenheit "F") (+ (* celsius 1.8) 32))
+    (_ celsius)))
 
 (defun sparkweather--detect-invalid-windows (windows)
   "Detect windows with invalid hour ranges in WINDOWS list.
@@ -548,15 +571,19 @@ Returns (temps precip-probs temp-min temp-max precip-max rainy-codes)."
 Returns list of entries for `tabulated-list-mode'."
   (pcase-let* ((`(,temps ,precip-probs ,temp-min ,temp-max ,precip-max ,rainy-codes)
                 (sparkweather--calculate-ranges data))
+               (converted-temps (mapcar #'sparkweather--convert-temperature temps))
                (`(,window-data ,highlights)
                 (sparkweather--prepare-windows data windows))
-               (temp-sparkline (sparkweather--sparkline temps highlights current-hour))
+               (temp-sparkline (sparkweather--sparkline converted-temps highlights current-hour))
                (precip-sparkline (sparkweather--sparkline precip-probs highlights current-hour))
                (worst-weather-code (and rainy-codes (apply #'max rainy-codes)))
                (worst-weather-info (when worst-weather-code
                                     (sparkweather--wmo-code-info worst-weather-code))))
     (append
-     (list (list 'temp (vector (format "%d—%d°C" (round temp-min) (round temp-max))
+     (list (list 'temp (vector (format "%d—%d%s"
+                                      (round (sparkweather--convert-temperature temp-min))
+                                      (round (sparkweather--convert-temperature temp-max))
+                                      (sparkweather--temperature-unit-symbol))
                                temp-sparkline)))
      (when worst-weather-info
        (list (list 'precip (vector (format "%d%% %s"
