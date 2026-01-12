@@ -390,6 +390,47 @@
       (should (= (length overlaps) 1))
       (should (equal (car overlaps) '("All Day" "Lunch" 12 14))))))
 
+(ert-deftest sparkweather-test-temperature-unit-symbol-celsius ()
+  "Temperature unit symbol returns °C for celsius."
+  (let ((sparkweather-temperature-unit 'celsius))
+    (should (equal (sparkweather--temperature-unit-symbol) "°C"))))
+
+(ert-deftest sparkweather-test-temperature-unit-symbol-fahrenheit ()
+  "Temperature unit symbol returns °F for fahrenheit."
+  (let ((sparkweather-temperature-unit 'fahrenheit))
+    (should (equal (sparkweather--temperature-unit-symbol) "°F"))))
+
+(ert-deftest sparkweather-test-temperature-unit-symbol-c ()
+  "Temperature unit symbol returns °C for \"C\" string."
+  (let ((sparkweather-temperature-unit "C"))
+    (should (equal (sparkweather--temperature-unit-symbol) "°C"))))
+
+(ert-deftest sparkweather-test-temperature-unit-symbol-f ()
+  "Temperature unit symbol returns °F for \"F\" string."
+  (let ((sparkweather-temperature-unit "F"))
+    (should (equal (sparkweather--temperature-unit-symbol) "°F"))))
+
+(ert-deftest sparkweather-test-convert-temperature-celsius ()
+  "Temperature conversion with celsius returns value unchanged."
+  (let ((sparkweather-temperature-unit 'celsius))
+    (should (= (sparkweather--convert-temperature 0) 0))
+    (should (= (sparkweather--convert-temperature 20) 20))
+    (should (= (sparkweather--convert-temperature -10) -10))))
+
+(ert-deftest sparkweather-test-convert-temperature-fahrenheit ()
+  "Temperature conversion with fahrenheit converts correctly."
+  (let ((sparkweather-temperature-unit 'fahrenheit))
+    (should (= (sparkweather--convert-temperature 0) 32))
+    (should (= (sparkweather--convert-temperature 100) 212))
+    (should (= (sparkweather--convert-temperature -40) -40))
+    (should (= (sparkweather--convert-temperature 20) 68))))
+
+(ert-deftest sparkweather-test-convert-temperature-f-string ()
+  "Temperature conversion with \"F\" string converts correctly."
+  (let ((sparkweather-temperature-unit "F"))
+    (should (= (sparkweather--convert-temperature 0) 32))
+    (should (= (sparkweather--convert-temperature 20) 68))))
+
 (provide 'sparkweather-test)
 
 ;;; sparkweather-test.el ends here
