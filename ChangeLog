@@ -1,3 +1,10 @@
+2026-03-17  Robin Stephenson  <robin@aglet.net>
+
+	* sparkweather.org (sparkweather--format-footer): Handle
+	calendar-location-name as sexp. The default value in solar.el
+	is a let expression, not a string; use pcase to dispatch on
+	type. (Closes #3)
+
 2025-12-18  Robin Stephenson  <robin@aglet.net>
 
 	* sparkweather.org (sparkweather-add-footer,
