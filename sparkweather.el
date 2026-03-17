@@ -4,7 +4,7 @@
 
 ;; Author: Robin Stephenson <robin@aglet.net>
 ;; Keywords: convenience, weather
-;; Version: 0.3.1
+;; Version: 0.3.2
 ;; Package-Requires: ((emacs "29.1"))
 ;; URL: https://github.com/aglet/sparkweather
 
@@ -487,7 +487,9 @@ timestamp when footer is hidden."
   ;; sparkweather--window-max-height relies on this to hide only the timestamp line.
   (concat "\n" (format-time-string "%A %F %R")
           (when (and (boundp 'calendar-location-name) calendar-location-name)
-            (concat " " calendar-location-name))))
+            (concat " " (pcase calendar-location-name
+                          ((and (pred stringp) s) s)
+                          ((and (pred listp) expr) (eval expr)))))))
 
 (defun sparkweather--footer-line-count ()
   "Count number of lines in footer."
